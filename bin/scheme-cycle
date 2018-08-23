@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+trap "exit 1" SIGTERM SIGINT ERR
+
+# Installation paths to scheme-cycle and dynamic-colors
+INSTALL_PATH="$HOME/.scheme-cycle/bin"
+DYNAMIC_COLORS_INSTALL_PATH="$HOME/.dynamic-colors/bin"
+
+die () {
+  echo "$@" 1>&2
+  exit 1
+}
+
+# Recolor all known screen/terminal instances
+recolor () {
+  for tty in $(ls \/dev\/pts/ | grep -E ^[0-9]+$)
+  do
+    # Check dynamic-colors is in PATH
+    if hash "$DYNAMIC_COLORS_INSTALL_PATH/dynamic-colors" 2>/dev/null
+    then
+      $DYNAMIC_COLORS_INSTALL_PATH/dynamic-colors switch $1 > /dev/pts/$tty
+      
+      if [[ $? -ne 0 ]]
+      then
+        echo "Failed to switch scheme in tty#$tty"
+      fi
+    else
+      die "dynamic-colors was not found in ($DYNAMIC_COLORS_INSTALL_PATH). Aboring."
+    fi
+  done
+}
+
+# Convert hour to 24 hour format
+convert_hour () {
+  local hour=${1#0}
+  local meridiem=$(echo $2 | tr '[a-z]' '[A-Z]')
+
+  if [[ $hour -lt 13 && $hour -gt 0 ]]
+  then
+    if [[ $hour -lt 12 && $meridiem = "PM" ]]
+    then
+      hour=$(( 12 + hour ))
+    elif [[ $hour -eq 12 && $meridiem = "AM" ]]
+    then
+      hour=0
+    fi
+
+    echo $hour
+  else
+    die "Failed to convert hour"
+  fi
+}
+
+# Parse time input
+parse_time () {
+  local time_re="^([0-9]{1,2})(am|AM|pm|PM)$" 
+  
+  if [[ $1 =~ $time_re ]]
+  then
+    convert_hour ${BASH_REMATCH[1]} ${BASH_REMATCH[2]}
+  else
+    die "Failed to parse time input"
+  fi
+}
+
+# Verify color scheme exists in dynamic-colors
+scheme_exists () {
+  $DYNAMIC_COLORS_INSTALL_PATH/dynamic-colors list | grep "^$1$" 1>/dev/null
+  echo $?
+}
+
+# Verify scheduled cycle exists
+cycle_exists () {
+  crontab -l | grep "cycle:\s$1$" 1>/dev/null
+  echo $?
+}
+
+# Schedule a new scheme-cycle
+schedule () {
+  if [[ $(scheme_exists $3) -eq 0 && $(cycle_exists $1) -ne 0 ]]
+  then
+    local hour=$(parse_time $2)   
+    
+    if [[ $? -eq 0 && $hour -gt -1 && $hour -lt 24 ]]
+    then
+      (crontab -l 2>/dev/null; echo "0 $hour * * * $INSTALL_PATH/scheme-cycle recolor $3 # scheme-cycle: $1") | uniq - | crontab -     
+      
+      if [[ $? -eq 0 ]]
+      then
+        echo "Scheduled new cycle ($1) at $2"
+      else
+        die "Unable to schedule new cycle ($1) at $2"
+      fi
+    fi
+  else
+    die "Failed to schedule new cycle: $1"
+  fi
+}
+
+# Clear a scheduled scheme-cycle
+clear_schedule () {
+  if [[ $(cycle_exists $1) -eq 0 ]]
+  then
+    crontab -l | sed '/scheme-cycle:\s'"$1"'/d' | crontab -   
+    
+    if [[ $? -eq 0 ]]
+    then
+      echo "Cleared scheduled cycle: $1"
+    else
+      die "Unable to clear cycle: $1"
+    fi
+  else
+    die "Failed to clear cycle: $1"
+  fi
+}
+
+# Display usage
+help () {
+  echo "usage: scheme-cycle schedule|clear|recolor|help <cycle> <time> <scheme>"
+}
+
+case "#?" in
+  0)
+    help ;;
+  *)
+    cmd="$1"
+    shift
+    case "$cmd" in
+      h|help)
+        help ;;
+      s|schedule)
+        schedule $1 $2 $3 ;;
+      c|clear)
+        clear_schedule $1 ;;
+      r|recolor)
+        recolor $1 ;;
+      *)
+        help ;;
+    esac
+esac
